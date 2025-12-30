@@ -1,0 +1,50 @@
+# --- Project Specific ---
+# 認証情報 (cookies)
+data/
+# デバッグ用スクリーンショット
+debug/
+# 生成されたMarkdownとメディア
+out/
+
+# --- Internal Documentation (Local Only) ---
+# 要件、設計、作業記録など
+docs/
+
+# --- Python ---
+__pycache__/
+build/
+dist/
+downloads/
+eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg
+*.egg-info/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.eggs/
+.installed.cfg
+
+# --- Virtual Environment ---
+.venv/
+venv/
+env/
+ENV/
+
+# --- IDE / Editors ---
+.idea/
+.vscode/
+*.swo
+*.swp
+*~
+
+# --- OS / Miscellaneous ---
+.DS_Store
+Thumbs.db
+*.log
