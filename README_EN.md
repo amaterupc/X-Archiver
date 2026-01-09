@@ -1,6 +1,12 @@
 # X-Archiver
 
-A tool to convert X (formerly Twitter) threads into blog-style Markdown articles.
+<div align="center">
+
+**A tool to convert X (formerly Twitter) threads into blog-style Markdown articles**
+
+English | [日本語](./README.md)
+
+</div>
 
 ## Folder Structure
 

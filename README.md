@@ -1,6 +1,12 @@
 # X-Archiver
 
-X（旧Twitter）のスレッドをブログ記事形式（Markdown）に変換するツールです。
+<div align="center">
+
+**X（旧Twitter）のスレッドをブログ記事形式（Markdown）に変換するツール**
+
+[English](./README_EN.md) | 日本語
+
+</div>
 
 ## フォルダ構成
 
