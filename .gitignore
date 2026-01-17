@@ -48,3 +48,5 @@ ENV/
 .DS_Store
 Thumbs.db
 *.log
+# --- Node.js ---
+node_modules/

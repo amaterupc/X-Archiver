@@ -12,6 +12,7 @@ def main():
     parser.add_argument("--output", "-o", help="Output filename (optional). Default is out/thread_<id>.md")
     parser.add_argument("--headless", action=argparse.BooleanOptionalAction, default=True, help="Run browser in headless mode.")
     parser.add_argument("--media", action=argparse.BooleanOptionalAction, default=True, help="Download images and videos locally.")
+    parser.add_argument("--backend", choices=["playwright", "agent-browser"], default="agent-browser", help="Choose the scraping backend (default: agent-browser).")
     
     args = parser.parse_args()
     
@@ -19,10 +20,10 @@ def main():
     os.makedirs("out", exist_ok=True)
     
     url = args.url
-    print(f"fetching thread from: {url}")
+    print(f"fetching thread from: {url} (backend: {args.backend})")
     
     # 1. Fetch thread content using Playwright
-    tweets = get_thread(url, headless=args.headless)
+    tweets = get_thread(url, headless=args.headless, backend=args.backend)
     
     if not tweets:
         print("Failed to retrieve tweets.")

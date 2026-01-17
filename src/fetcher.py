@@ -37,9 +37,224 @@ def load_storage_state(path):
     # Otherwise assume it's already in the correct dict format
     return data
 
-def get_thread(url: str, headless: bool = True):
+from src.agent_interface import AgentBrowserInterface
+import lxml.html
+
+def get_thread(url: str, headless: bool = True, backend: str = "playwright"):
     """
     Fetches an X thread from the given URL.
+    Returns a list of dictionaries containing tweet data.
+    
+    Args:
+        url (str): The URL of the thread.
+        headless (bool): Whether to run in headless mode (Playwright only).
+        backend (str): 'playwright' or 'agent-browser'.
+    """
+    if backend == "agent-browser":
+        return _get_thread_agent_browser(url)
+    else:
+        return _get_thread_playwright(url, headless)
+
+def _get_thread_agent_browser(url: str):
+    """
+    Implementation using agent-browser CLI.
+    """
+    print(f"[Agent-Browser] Starting session for {url}")
+    agent = AgentBrowserInterface()
+    
+    collected_tweets = []
+    seen_ids = set()
+    
+    try:
+        # Load available cookies
+        storage_path = os.path.join("data", "cookies.json")
+        storage_state = load_storage_state(storage_path)
+        
+        if storage_state and "cookies" in storage_state:
+            print("[Agent-Browser] Pre-loading x.com to set cookies...")
+            # We need to establish a domain context to set cookies usually
+            agent.open("https://x.com")
+            # Wait a bit for page init (even if it redirects to login)
+            agent.wait(3000)
+            
+            count = 0
+            for c in storage_state["cookies"]:
+                # Simple domain check to avoid setting irrelevant cookies if any
+                domain = c.get("domain", "")
+                if ".x.com" in domain or ".twitter.com" in domain or "x.com" == domain:
+                    agent.set_cookie(c)
+                    count += 1
+            print(f"[Agent-Browser] Set {count} cookies.")
+        
+        # Navigate
+        print(f"[Agent-Browser] Navigating to target: {url}")
+        agent.open(url)
+        agent.wait(5000) # Wait for initial load
+        
+        # Determine OP handle from URL
+        # URL format: https://x.com/username/status/123...
+        op_handle = ""
+        match = re.search(r'x\.com/([^/]+)/status', url)
+        if match:
+            op_handle = match.group(1)
+        
+        # Scroll loop similar to Playwright
+        max_attempts = 5
+        attempts = 0
+        last_html_len = 0
+        
+        for i in range(max_attempts):
+            print(f"[Agent-Browser] Scroll iteration {i+1}/{max_attempts}")
+            
+            # Click "Show more" buttons using JS injection
+            # This is more robust than finding selectors one by one via CLI
+            js_click_all = """
+            (() => {
+                const buttons = document.querySelectorAll('[data-testid="tweet-text-show-more-link"]');
+                let count = 0;
+                buttons.forEach(b => {
+                    // Check visibility (offsetParent is null if hidden)
+                    if (b.offsetParent !== null) {
+                        b.click();
+                        count++;
+                    }
+                });
+                return count;
+            })()
+            """
+            try:
+                res = agent.evaluate(js_click_all)
+                # The result might be "2" or similar string, or empty.
+                if res and res.isdigit() and int(res) > 0:
+                    print(f"[Agent-Browser] Expanded {res} tweets.")
+                    agent.wait(500) # Wait for expansion
+            except Exception as e:
+                print(f"[Agent-Browser] Warning: JS eval failed: {e}")
+            
+            # Get content
+            html_content = agent.get_html()
+            if not html_content:
+                print("[Agent-Browser] Failed to get HTML content.")
+                break
+                
+            current_len = len(html_content)
+            if current_len == last_html_len:
+                attempts += 1
+                if attempts >= 2:
+                    print("[Agent-Browser] No more content loading.")
+                    break
+            else:
+                attempts = 0
+                last_html_len = current_len
+            
+            # Parse HTML with lxml
+            # Since we can't use Playwright's element handles, we parse the static HTML dump.
+            # This is less robust for dynamic events but sufficient for scraping text.
+            tweets = _parse_html_tweets(html_content, op_handle)
+            
+            new_tweets = 0
+            for t in tweets:
+                if t['id'] not in seen_ids:
+                    collected_tweets.append(t)
+                    seen_ids.add(t['id'])
+                    new_tweets += 1
+            
+            print(f"[Agent-Browser] Found {new_tweets} new tweets (Total: {len(collected_tweets)})")
+            
+            # Scroll down
+            agent.scroll("down", 1000)
+            agent.wait(2000)
+            
+    except Exception as e:
+        print(f"[Agent-Browser] Error: {e}")
+    finally:
+        agent.close()
+        
+    return collected_tweets
+
+def _parse_html_tweets(html_content, op_handle):
+    """
+    Parses tweet data from raw HTML content using lxml.
+    """
+    tweets_data = []
+    if not html_content:
+        return tweets_data
+        
+    try:
+        doc = lxml.html.fromstring(html_content)
+        articles = doc.xpath('//article[@data-testid="tweet"]')
+        
+        for article in articles:
+            try:
+                # Text
+                text_div = article.xpath('.//div[@data-testid="tweetText"]')
+                text = text_div[0].text_content() if text_div else ""
+                
+                # Timestamp
+                time_el = article.xpath('.//time')
+                timestamp = time_el[0].get('datetime') if time_el else ""
+                
+                # Links for ID
+                links = article.xpath('.//a[contains(@href, "/status/")]')
+                tweet_url = ""
+                tweet_id = None
+                
+                for link in links:
+                    href = link.get('href')
+                    # Check if inside quote
+                    # accurate XPath check for ancestor quote is tricky on static generic HTML parse 
+                    # without precise class logic, but let's try strict hierarchy check if possible.
+                    # Simplified: just take first one that looks like a main status.
+                    if "/status/" in href:
+                        tweet_url = href
+                        match = re.search(r'/status/(\d+)', href)
+                        if match:
+                            tweet_id = match.group(1)
+                            # Prefer OP's status
+                            if op_handle and f"/{op_handle}/" in href:
+                                break
+                
+                if not tweet_id:
+                     tweet_id = f"{timestamp}-{text[:10]}"
+                
+                # Images
+                imgs = article.xpath('.//img[contains(@src, "pbs.twimg.com/media")]')
+                images = [img.get('src') for img in imgs]
+                
+                # Video (simple check)
+                video = article.xpath('.//div[@data-testid="videoPlayer"]')
+                has_video = bool(video)
+                
+                # Check handle to filter non-OP replies (approximate without detailed user info)
+                # We try to find the user link at the start of the tweet
+                user_links = article.xpath('.//div[@data-testid="User-Name"]//a[starts-with(@href, "/")]')
+                tweet_handle = ""
+                if user_links:
+                    tweet_handle = user_links[0].get('href').strip("/")
+                
+                if op_handle and tweet_handle != op_handle:
+                    continue
+
+                tweets_data.append({
+                    "id": tweet_id,
+                    "text": text,
+                    "timestamp": timestamp,
+                    "images": images,
+                    "url": tweet_url,
+                    "has_video": has_video
+                })
+                
+            except Exception as ex:
+                continue
+                
+    except Exception as e:
+        print(f"Parse error: {e}")
+        
+    return tweets_data
+
+def _get_thread_playwright(url: str, headless: bool = True):
+    """
+    Fetches an X thread from the given URL using Playwright.
     Returns a list of dictionaries containing tweet data.
     """
     with sync_playwright() as p:
@@ -102,6 +317,34 @@ def get_thread(url: str, headless: bool = True):
         max_attempts = 5 # Limit scrolling to avoid infinite loops or getting too much unrelated stuff
 
         while True:
+            # 1. Expand "Show more" / "Read more" buttons
+            # Try to click "Show more" buttons to expand truncated text
+            try:
+                # We will try a few selectors but catch errors aggressively
+                # [data-testid="tweet-text-show-more-link"] is the most specific one.
+                buttons = page.query_selector_all('[data-testid="tweet-text-show-more-link"]')
+                # if not buttons:
+                #    # Fallback to text search if testid is missing - DISABLED for safety/speed
+                #    buttons = page.query_selector_all('text="Show more"')
+                # if not buttons:
+                #    buttons = page.query_selector_all('text="さらに表示"')
+                
+                if buttons:
+                    # print(f"Debug: Found {len(buttons)} 'Show more' buttons.")
+                    pass
+
+                for btn in buttons:
+                    if btn.is_visible():
+                        try:
+                            # print("Debug: Clicking 'Show more'...")
+                            btn.click(timeout=1000)
+                            # Small sleep to allow simple expansion
+                            time.sleep(0.5) 
+                        except Exception:
+                            pass 
+            except Exception as e:
+                pass
+
             # Get all visible tweets
             all_visible_tweets = page.query_selector_all('article[data-testid="tweet"]')
             
@@ -204,10 +447,6 @@ def get_thread(url: str, headless: bool = True):
             else:
                 attempts = 0
                 last_height = new_height
-            
-            # Heuristic break: if we have a lot of tweets, maybe stop? 
-            # Or reliance on "Show more replies" button?
-            # For now, simple scrolling is usually enough for medium threads.
 
         if len(collected_tweets) <= 1:
             os.makedirs("debug", exist_ok=True)
