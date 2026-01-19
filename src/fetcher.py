@@ -250,6 +250,113 @@ def _parse_html_tweets(html_content, op_handle):
     except Exception as e:
         print(f"Parse error: {e}")
         
+    # Try parsing as Twitter Article (Note)
+    try:
+        doc = lxml.html.fromstring(html_content)
+        article_view = doc.xpath('//div[@data-testid="twitterArticleReadView"]')
+        
+        if article_view:
+            print("[Agent-Browser] Detected Twitter Article/Note.")
+            view = article_view[0]
+            
+            # Title
+            title_el = view.xpath('.//div[@data-testid="twitter-article-title"]')
+            title = title_el[0].text_content() if title_el else "No Title"
+            
+            # Body content
+            # Strategy: Get all text from div components that are likely paragraphs
+            # We look for divs that have specific text classes or generic containers excluding buttons
+            
+            # Remove noise elements (buttons, stats) from a copy to extract text cleanly
+            # However, lxml copies are tricky. We can try to select specific content divs.
+            # Observation: Content usually resides in 'div.css-1jxf684' spans or 'div.longform-*'
+            
+            # Simple approach: Extract all text, but filter out button text which usually are stats.
+            # However, stats like "92 replies" are in buttons.
+            
+            content_text = []
+            
+            # Extract title explicitly
+            content_text.append(f"# {title}\n")
+            
+            # Find the main container? 
+            # We iterate over all text-bearing elements and try to exclude buttons/ui
+            
+            # Get all elements with text
+            all_elements = view.xpath('.//*[text()]')
+            # Filter:
+            # - Ignore inside button
+            # - Ignore inside script/style
+            
+            # Better: use CSS classes if possible. 
+            # "css-1jxf684" seems to be the text span class.
+            text_spans = view.xpath('.//span[contains(@class, "css-1jxf684")] | .//div[contains(@class, "css-1jxf684")] | .//span')
+            
+            seen_text = set()
+            body_text = []
+            
+            for span in text_spans:
+                txt = span.text_content().strip()
+                if not txt:
+                    continue
+                    
+                # Check if inside button
+                is_button = span.xpath('ancestor::button')
+                if is_button:
+                    continue
+
+                # Check if it's the title (already added)
+                is_title = span.xpath('ancestor::div[@data-testid="twitter-article-title"]')
+                if is_title:
+                    continue
+
+                if txt and txt not in seen_text:
+                    body_text.append(txt)
+                    seen_text.add(txt)
+
+            full_text = "\n\n".join(body_text)
+            text = f"{title}\n\n{full_text}"
+
+            # ID and Timestamp
+            # URL is passed in args or found in links
+            tweet_id = None
+            if op_handle:
+                # Try to find link to this article
+                pass
+
+            # Attempt to find timestamp
+            time_el = view.xpath('.//time')
+            timestamp = time_el[0].get('datetime') if time_el else ""
+
+            # ID from URL or timestamp
+            parent_link = time_el[0].getparent().get('href') if time_el else ""
+            match = re.search(r'/status/(\d+)', str(parent_link))
+            if not match:
+                match = re.search(r'/article/(\d+)', str(parent_link))
+
+            if match:
+                tweet_id = match.group(1)
+            else:
+                tweet_id = f"article-{timestamp}"
+
+            # Images in Article
+            imgs = view.xpath('.//img[contains(@src, "pbs.twimg.com/media")]')
+            images = [img.get('src') for img in imgs]
+
+            # Add to tweets_data if not duplicate
+            tweets_data.append({
+                "id": tweet_id,
+                "text": text,
+                "timestamp": timestamp,
+                "images": images,
+                "url": f"https://x.com/{op_handle}/status/{tweet_id}" if tweet_id and op_handle else "",
+                "has_video": False,
+                "is_article": True
+            })
+
+    except Exception as e:
+        print(f"Article Parse error: {e}")
+
     return tweets_data
 
 def _get_thread_playwright(url: str, headless: bool = True):
