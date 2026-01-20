@@ -555,23 +555,106 @@ def _get_thread_playwright(url: str, headless: bool = True):
                 attempts = 0
                 last_height = new_height
 
-        if len(collected_tweets) <= 1:
+        # Check for Twitter Article (Note) if not yet found
+        has_article = any(t.get('is_article') for t in collected_tweets)
+        if not has_article:
+            article_view = page.query_selector('div[data-testid="twitterArticleReadView"]')
+            if article_view:
+                print("Detected Twitter Article/Note.")
+                
+                try:
+                    # Title
+                    title_el = article_view.query_selector('div[data-testid="twitter-article-title"]')
+                    title = title_el.inner_text() if title_el else "No Title"
+                    
+                    # Body content: Use evaluate to robustly extract text excluding buttons
+                    body_text = article_view.evaluate("""(el) => {
+                        const title = el.querySelector('div[data-testid="twitter-article-title"]');
+                        const textNodes = [];
+                        const seen = new Set();
+                        
+                        // Select all text-containing elements
+                        const candidates = el.querySelectorAll('span, div');
+                        
+                        candidates.forEach(node => {
+                            // Filter out buttons
+                            if (node.closest('button')) return;
+                            // Filter out title
+                            if (title && (title === node || title.contains(node))) return;
+                            
+                            const text = node.innerText.trim();
+                            if (text && !seen.has(text)) {
+                                textNodes.push(text);
+                                seen.add(text);
+                            }
+                        });
+                        return textNodes.join('\\n\\n');
+                    }""")
+                    
+                    full_text = f"# {title}\n\n{body_text}"
+                    
+                    # Metadata
+                    time_el = article_view.query_selector('time')
+                    timestamp = time_el.get_attribute("datetime") if time_el else ""
+                    
+                    # ID extraction
+                    tweet_id = None
+                    if time_el:
+                        parent = time_el.evaluate_handle(
+                            "el => el.parentElement"
+                        )
+                        href = parent.get_attribute("href")
+                        if href:
+                            match = re.search(
+                                r'/(?:status|article)/(\d+)', href
+                            )
+                            if match:
+                                tweet_id = match.group(1)
+                    
+                    if not tweet_id:
+                        tweet_id = f"article-{timestamp}"
+                        
+                    # Images
+                    images = []
+                    img_elements = article_view.query_selector_all(
+                        'img[src*="pbs.twimg.com/media"]'
+                    )
+                    for img in img_elements:
+                        src = img.get_attribute("src")
+                        if src:
+                            images.append(src)
+                             
+                    # Add to collected tweets
+                    collected_tweets.append({
+                        "id": tweet_id,
+                        "text": full_text,
+                        "timestamp": timestamp,
+                        "images": images,
+                        "url": url,
+                        "has_video": False,
+                        "is_article": True
+                    })
+                    
+                except Exception as e:
+                    print(f"Error parsing Article in Playwright: {e}")
+
+        if not any(t.get('is_article') for t in collected_tweets):
             os.makedirs("debug", exist_ok=True)
-            debug_path = os.path.join("debug", "debug_page.png")
-            print(f"Debug: Saving screenshot to {debug_path}")
+            debug_path = os.path.join("debug", "debug_page_pw.png")
+            print(
+                f"[Playwright] Debug: No article found. Screen: {debug_path}"
+            )
             page.screenshot(path=debug_path, full_page=True)
-            
-            # thorough debug of page content
-            content = page.content()
-            if "Sign in to X" in content or "Log in" in content:
-                print("DEBUG_INFO: Login detected on page.")
-            if "Unlock more on X" in content:
-                print("DEBUG_INFO: 'Unlock more' wall detected.")
-            if "Show more replies" in content:
-                print("DEBUG_INFO: 'Show more replies' button detected (but maybe not clicked).")
+
+            # Additional debug info
+            if "Sign in to X" in page.content():
+                print("[Playwright] Login wall detected.")
 
         browser.close()
         return collected_tweets
+
+
+class AgentBrowserInterface:
 
 if __name__ == "__main__":
     # Test with a dummy URL or user input
